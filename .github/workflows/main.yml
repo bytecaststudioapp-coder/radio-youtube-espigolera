@@ -2,8 +2,6 @@ name: Radio 24/7 con Onda en Vivo
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 */5 * * *'
 
 concurrency:
   group: radio-stream
@@ -15,25 +13,26 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Descargar imagen del repositorio
+      - name: Descargar archivos del repositorio
         uses: actions/checkout@v4
 
-      - name: Instalar FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Instalar FFmpeg y fuentes de texto
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Emitir Radio + Imagen + Onda Continua a YouTube
+      - name: Emitir Radio + Reloj Real + Onda + Programacion
         env:
+          TZ: 'Europe/Madrid'
           YT_KEY: ${{ secrets.YOUTUBE_KEY }}
           STREAM_URL: ${{ secrets.RADIO_URL }}
         run: |
           while true; do
-            ffmpeg -re -loop 1 -framerate 25 -i logo.jpg \
-              -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+            ffmpeg -re -f image2 -loop 1 -framerate 24 -i logo.jpg \
+              -thread_queue_size 4096 -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -i "$STREAM_URL" \
-              -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2[bg];[1:a]showwaves=s=1280x180:mode=cline:rate=25:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-30[outv]" \
+              -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[bg];[1:a]aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=25:y=622:w=160:h=42:color=black@0.9:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%H\:%M\:%S}':fontcolor=white:fontsize=24:x=45:y=632,drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=programacion.txt:reload=1:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
               -map "[outv]" -map 1:a \
-              -c:v libx264 -preset veryfast -pix_fmt yuv420p \
-              -b:v 2000k -maxrate 2000k -bufsize 4000k -g 50 \
+              -c:v libx264 -preset ultrafast -tune stillimage -pix_fmt yuv420p \
+              -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
               -c:a aac -b:a 128k -ar 44100 \
               -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
             echo "Reconectando en 5 segundos..."
