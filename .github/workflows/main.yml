@@ -39,8 +39,8 @@ jobs:
               -c:a aac -b:a 128k -ar 44100 \
               -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
 
-            echo "=== EMITIENDO PROMO 2 ==="
-            ffmpeg -re -i prom1.mp4 \
+            echo "=== EMITIENDO PROMO 2 (promo1.mp4) ==="
+            ffmpeg -re -i promo1.mp4 \
               -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono[a_out]" \
               -map "[v_out]" -map "[a_out]" \
               -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
