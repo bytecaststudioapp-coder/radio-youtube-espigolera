@@ -25,31 +25,54 @@ jobs:
           YT_KEY: ${{ secrets.YOUTUBE_KEY }}
           STREAM_URL: ${{ secrets.RADIO_URL }}
         run: |
-          cat << 'EOF' > rotulo.txt
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Muñoz   ---   
-          EOF
+          # Comprobación inicial
+          ls -la
+          for f in promo.mp4 promo1.mp4 logo.jpg; do
+            test -f "$f" && echo "OK: $f" || echo "!!! FALTA: $f"
+          done
+
+          printf '%s' "*** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Muñoz   ---   " > rotulo.txt
+
+          RTMP="rtmp://a.rtmp.youtube.com/live2/$YT_KEY"
+
+          # Opciones de salida comunes
+          OUT=(-c:v libx264 -preset ultrafast -pix_fmt yuv420p
+               -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48
+               -c:a aac -b:a 128k -ar 44100
+               -f flv "$RTMP")
+
+          VF="scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
+
+          emitir_video() {
+            local f="$1"
+            if [ ! -f "$f" ]; then
+              echo "!!! NO EXISTE $f"
+              return
+            fi
+            echo "=== EMITIENDO $f ==="
+            if ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "$f" | grep -q audio; then
+              # Vídeo con audio
+              ffmpeg -loglevel warning -re -i "$f" \
+                -filter_complex "[0:v]${VF}[v_out];[0:a]aformat=sample_rates=44100:channel_layouts=mono[a_out]" \
+                -map "[v_out]" -map "[a_out]" -t 180 \
+                "${OUT[@]}" || echo "!!! ffmpeg falló con $f (código $?)"
+            else
+              # Vídeo sin audio: se añade silencio
+              echo "(sin audio, se añade silencio)"
+              ffmpeg -loglevel warning -re -i "$f" \
+                -f lavfi -i anullsrc=r=44100:cl=mono \
+                -filter_complex "[0:v]${VF}[v_out]" \
+                -map "[v_out]" -map 1:a -t 180 -shortest \
+                "${OUT[@]}" || echo "!!! ffmpeg falló con $f (código $?)"
+            fi
+          }
 
           while true; do
-            echo "=== EMITIENDO PROMO 1 ==="
-            ffmpeg -re -i promo.mp4 -t 180 \
-              -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono,ar=44100[a_out]" \
-              -map "[v_out]" -map "[a_out]" \
-              -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-              -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
-              -c:a aac -b:a 128k -ar 44100 \
-              -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
-
-            echo "=== EMITIENDO PROMO 2 ==="
-            ffmpeg -re -i promo1.mp4 -t 180 \
-              -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono,ar=44100[a_out]" \
-              -map "[v_out]" -map "[a_out]" \
-              -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-              -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
-              -c:a aac -b:a 128k -ar 44100 \
-              -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
+            emitir_video promo.mp4
+            emitir_video promo1.mp4
 
             echo "=== EMITIENDO RADIO CON ONDA Y ROTULOS ==="
-            timeout 600 ffmpeg -re -f image2 -loop 1 -framerate 24 -i logo.jpg \
+            timeout 600 ffmpeg -loglevel warning -re -f image2 -loop 1 -framerate 24 -i logo.jpg \
               -thread_queue_size 4096 -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -i "$STREAM_URL" \
               -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[bg];[1:a]aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
@@ -57,5 +80,5 @@ jobs:
               -c:v libx264 -preset ultrafast -tune stillimage -pix_fmt yuv420p \
               -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
               -c:a aac -b:a 128k -ar 44100 \
-              -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
+              -f flv "$RTMP" || echo "!!! La radio terminó (código $?), se reinicia el ciclo"
           done
