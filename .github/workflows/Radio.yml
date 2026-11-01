@@ -2,6 +2,14 @@ name: Radio 24h Musica libre e informacion local
 
 on:
   workflow_dispatch:
+    inputs:
+      fuente:
+        description: 'Que emitir: musica (libre de derechos) o radio (senal de la emisora)'
+        type: choice
+        default: musica
+        options:
+          - musica
+          - radio
 
 concurrency:
   group: radio-stream
@@ -27,6 +35,8 @@ jobs:
         env:
           TZ: 'Europe/Madrid'
           YT_KEY: ${{ secrets.YOUTUBE_KEY }}
+          STREAM_URL: ${{ secrets.RADIO_URL }}
+          FUENTE: ${{ inputs.fuente }}
         run: |
           RTMP="rtmp://a.rtmp.youtube.com/live2/$YT_KEY"
           # Se detiene a los 325 min para dejar margen antes del limite de GitHub (350 min)
@@ -43,11 +53,12 @@ jobs:
           ls -la musica | head -50
 
           # ---------- 1. Preparar la musica (mismo formato y volumen) ----------
+          if [ "$FUENTE" != "radio" ]; then
           mkdir -p norm
           i=0
           while IFS= read -r f; do
             i=$((i+1))
-            ffmpeg -loglevel error -y -i "$f" -vn -af loudnorm=I=-16:TP=-1.5:LRA=11 \
+            ffmpeg -nostdin -loglevel error -y -i "$f" -vn -af loudnorm=I=-16:TP=-1.5:LRA=11 \
               -ar 44100 -ac 2 -c:a libmp3lame -b:a 192k "norm/$(printf '%04d' "$i").mp3" \
               || echo "!!! No se pudo convertir: $f"
           done < <(find musica -type f \( -iname '*.mp3' -o -iname '*.mpeg' -o -iname '*.mpga' -o -iname '*.mp2' -o -iname '*.mpg' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.ogg' -o -iname '*.wav' -o -iname '*.flac' \) | sort)
@@ -57,6 +68,8 @@ jobs:
             exit 1
           fi
           echo "Pistas preparadas: $(ls norm/*.mp3 | wc -l)"
+          fi
+          echo "Fuente elegida: $FUENTE"
 
           # ---------- 2. Fondo: fondo.mp4 en bucle si existe, si no logo.jpg ----------
           if [ -f fondo.mp4 ]; then
@@ -110,16 +123,36 @@ jobs:
               "${OUT[@]}" || echo "!!! El bloque de musica termino con error"
           }
 
+          # ---------- 6. Bloque de radio en directo con onda y rotulo (20 min) ----------
+          emitir_radio() {
+            echo "=== EMITIENDO RADIO ==="
+            if [ -z "$STREAM_URL" ]; then
+              echo "!!! Falta el secreto RADIO_URL"
+              return
+            fi
+            timeout 1300 ffmpeg -loglevel warning "${BG[@]}" \
+              -thread_queue_size 4096 -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
+              -i "$STREAM_URL" \
+              -filter_complex "[0:v]${VF}[bg];[1:a]aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
+              -map "[outv]" -map 1:a -t 1200 \
+              "${OUT[@]}" || echo "!!! El bloque de radio termino con error"
+          }
+
           # ---------- Bucle principal ----------
           while [ "$(date +%s)" -lt "$FIN" ]; do
             actualizar_rotulo
             emitir_video promo.mp4
             emitir_video promo1.mp4
-            emitir_musica
+            if [ "$FUENTE" = "radio" ]; then
+              emitir_radio
+            else
+              emitir_musica
+            fi
             sleep 3
           done
 
       - name: Relanzar la emision automaticamente
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run "$GITHUB_WORKFLOW"
+          FUENTE: ${{ inputs.fuente }}
+        run: gh workflow run "$GITHUB_WORKFLOW" -f fuente="$FUENTE"
