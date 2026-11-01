@@ -72,22 +72,82 @@ jobs:
           echo "Fuente elegida: $FUENTE"
 
           # ---------- 2. Fondo: fondo.mp4 en bucle si existe, si no logo.jpg ----------
+          # El fondo se prepara UNA vez en formato ligero (1280x720). Si se usara logo.jpg
+          # directamente, ffmpeg lo decodificaria 24 veces por segundo y no llegaria a tiempo.
+          VFB="scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
           if [ -f fondo.mp4 ]; then
             echo "Fondo: fondo.mp4 en bucle"
-            BG=(-re -stream_loop -1 -i fondo.mp4)
+            ffmpeg -nostdin -loglevel error -y -i fondo.mp4 -an -vf "${VFB},format=yuv420p" \
+              -r 24 -c:v libx264 -preset veryfast -crf 20 -g 48 fondo_loop.mp4
           else
             echo "Fondo: logo.jpg"
-            BG=(-re -loop 1 -framerate 24 -i logo.jpg)
+            ffmpeg -nostdin -loglevel error -y -i logo.jpg -vf "${VFB}" -frames:v 1 -update 1 fondo_720.png
+            ffmpeg -nostdin -loglevel error -y -loop 1 -framerate 24 -i fondo_720.png -t 5 \
+              -vf format=yuv420p -c:v libx264 -preset veryfast -crf 18 -g 120 -r 24 fondo_loop.mp4
           fi
+          if [ ! -f fondo_loop.mp4 ]; then
+            echo "!!! No se pudo preparar el fondo (revisa que exista logo.jpg o fondo.mp4)"
+            exit 1
+          fi
+          BG=(-re -stream_loop -1 -i fondo_loop.mp4)
 
           # ---------- 3. Rotulo con la informacion de info.txt ----------
           actualizar_rotulo() {
-            local url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/info.txt"
             local txt
-            txt=$(curl -fsS --max-time 15 "$url" 2>/dev/null || cat info.txt)
+            txt=$(cat info.txt 2>/dev/null)
             txt=$(printf '%s\n' "$txt" | tr -d '\r' | grep -v '^[[:space:]]*$' | sed 's/%//g; s/\\//g' | paste -sd'|' | sed 's/|/   |   /g')
             printf '%s' "*** ESPIGOLERA RADIO TV ***   ${txt}   ---   " > rotulo.txt
             echo "Rotulo actualizado: $(wc -c < rotulo.txt) caracteres"
+          }
+
+          # ---------- 3b. Carteles: imagenes de la carpeta carteles/ ----------
+          # Cada cartel se ve SHOW_CARTEL segundos; entre uno y otro se ve solo el fondo GAP_CARTEL segundos.
+          SHOW_CARTEL=15
+          GAP_CARTEL=10
+
+          preparar_carteles() {
+            local d="cart_tmp" n=0 f p
+            if ! find carteles -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) 2>/dev/null | grep -q .; then
+              rm -f carteles.mp4
+              return
+            fi
+            rm -rf "$d"; mkdir -p "$d"
+            while IFS= read -r f; do
+              n=$((n+1))
+              ffmpeg -nostdin -loglevel error -y -i "$f" \
+                -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1" \
+                -frames:v 1 -update 1 "$d/$(printf '%03d' "$n").png" \
+                || echo "!!! No se pudo preparar el cartel: $f"
+            done < <(find carteles -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) | sort)
+            # Imagen magenta: se hace transparente al emitir (es el "fondo solo")
+            ffmpeg -nostdin -loglevel error -y -f lavfi -i color=c=0xFF00FF:s=1280x720 -frames:v 1 -update 1 "$d/gap.png"
+            : > "$d/lista.txt"
+            for p in "$d"/[0-9]*.png; do
+              [ -f "$p" ] || continue
+              printf "file '%s'\nduration %s\nfile '%s'\nduration %s\n" "$PWD/$d/gap.png" "$GAP_CARTEL" "$PWD/$p" "$SHOW_CARTEL" >> "$d/lista.txt"
+            done
+            printf "file '%s'\n" "$PWD/$d/gap.png" >> "$d/lista.txt"
+            if ffmpeg -nostdin -loglevel error -y -f concat -safe 0 -i "$d/lista.txt" \
+                 -vf "fps=2,format=yuv420p" -c:v libx264 -preset veryfast -crf 18 carteles_nuevo.mp4; then
+              mv -f carteles_nuevo.mp4 carteles.mp4
+              echo "Carteles preparados: $n"
+            else
+              echo "!!! No se pudo crear el video de carteles"
+            fi
+          }
+
+          # Elige si se ven carteles (si hay) o el rotulo deslizante
+          montar_video() {
+            FILTRO="[0:v]${VF}[bg];[1:a]aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda]"
+            if [ -f carteles.mp4 ]; then
+              echo "Modo: carteles"
+              CART=(-re -stream_loop -1 -i carteles.mp4)
+              FILTRO="${FILTRO};[2:v]scale=1280:720,format=rgba,colorkey=0xFF00FF:0.12:0.0[cart];[con_onda][cart]overlay=0:0:format=auto,format=yuv420p[outv]"
+            else
+              echo "Modo: rotulo deslizante"
+              CART=()
+              FILTRO="${FILTRO};[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]"
+            fi
           }
 
           # ---------- 4. Videos promo ----------
@@ -115,10 +175,12 @@ jobs:
           # ---------- 5. Bloque de musica con onda y rotulo (20 min) ----------
           emitir_musica() {
             echo "=== EMITIENDO MUSICA ==="
+            montar_video
             ls norm/*.mp3 | shuf | sed "s|^|file '$PWD/|; s|\$|'|" > lista.txt
             timeout 1300 ffmpeg -loglevel warning "${BG[@]}" \
               -re -stream_loop -1 -f concat -safe 0 -i lista.txt \
-              -filter_complex "[0:v]${VF}[bg];[1:a]aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
+              "${CART[@]}" \
+              -filter_complex "$FILTRO" \
               -map "[outv]" -map 1:a -t 1200 \
               "${OUT[@]}" || echo "!!! El bloque de musica termino con error"
           }
@@ -130,19 +192,27 @@ jobs:
               echo "!!! Falta el secreto RADIO_URL"
               return
             fi
+            montar_video
             timeout 1300 ffmpeg -loglevel warning "${BG[@]}" \
               -thread_queue_size 4096 -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -i "$STREAM_URL" \
-              -filter_complex "[0:v]${VF}[bg];[1:a]aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
+              "${CART[@]}" \
+              -filter_complex "$FILTRO" \
               -map "[outv]" -map 1:a -t 1200 \
               "${OUT[@]}" || echo "!!! El bloque de radio termino con error"
           }
 
           # ---------- Bucle principal ----------
           while [ "$(date +%s)" -lt "$FIN" ]; do
+            # Baja los cambios que hayas subido a GitHub (carteles nuevos, info.txt...)
+            git pull --ff-only -q 2>/dev/null || echo "(no se pudo actualizar desde el repositorio)"
             actualizar_rotulo
+            # Los carteles se preparan mientras salen las promos
+            preparar_carteles &
+            PREP=$!
             emitir_video promo.mp4
             emitir_video promo1.mp4
+            wait $PREP
             if [ "$FUENTE" = "radio" ]; then
               emitir_radio
             else
