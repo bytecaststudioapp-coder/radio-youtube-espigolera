@@ -19,7 +19,7 @@ jobs:
       - name: Instalar FFmpeg y fuentes de texto
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Emitir Video Promo y Radio en Bucle
+      - name: Emitir Radio y Promo sin Interrupciones
         env:
           TZ: 'Europe/Madrid'
           YT_KEY: ${{ secrets.YOUTUBE_KEY }}
@@ -31,7 +31,7 @@ jobs:
 
           while true; do
             echo "=== EMITIENDO VIDEO PROMOCIONAL ==="
-            ffmpeg -re -i promo.mp4 \
+            ffmpeg -re -stream_loop -1 -i promo.mp4 -t 300 \
               -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono[a_out]" \
               -map "[v_out]" -map "[a_out]" \
               -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
@@ -40,7 +40,6 @@ jobs:
               -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
 
             echo "=== EMITIENDO RADIO EN DIRECTO CON ONDA Y ROTULOS ==="
-            # Emite la radio durante 15 minutos (900 segundos) antes de volver a poner el video promocional
             timeout 900 ffmpeg -re -f image2 -loop 1 -framerate 24 -i logo.jpg \
               -thread_queue_size 4096 -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -i "$STREAM_URL" \
