@@ -19,19 +19,28 @@ jobs:
       - name: Instalar FFmpeg y fuentes de texto
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Emitir Radio y Promo sin Interrupciones
+      - name: Emitir Videos y Radio en Bucle Estable
         env:
           TZ: 'Europe/Madrid'
           YT_KEY: ${{ secrets.YOUTUBE_KEY }}
           STREAM_URL: ${{ secrets.RADIO_URL }}
         run: |
           cat << 'EOF' > rotulo.txt
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Muñoz   ---   
+          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Munoz   ---   
           EOF
 
           while true; do
-            echo "=== EMITIENDO VIDEO PROMOCIONAL ==="
-            ffmpeg -re -stream_loop -1 -i promo.mp4 -t 300 \
+            echo "=== EMITIENDO PROMO 1 ==="
+            ffmpeg -re -i promo.mp4 \
+              -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono[a_out]" \
+              -map "[v_out]" -map "[a_out]" \
+              -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+              -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
+              -c:a aac -b:a 128k -ar 44100 \
+              -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
+
+            echo "=== EMITIENDO PROMO 2 ==="
+            ffmpeg -re -i prom1.mp4 \
               -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono[a_out]" \
               -map "[v_out]" -map "[a_out]" \
               -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
