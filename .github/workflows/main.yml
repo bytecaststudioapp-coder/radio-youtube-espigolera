@@ -26,7 +26,7 @@ jobs:
           STREAM_URL: ${{ secrets.RADIO_URL }}
         run: |
           cat << 'EOF' > rotulo.txt
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Munoz   ---   
+          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Muñoz   ---   
           EOF
 
           while true; do
