@@ -1,3 +1,4 @@
+
 name: Radio 24/7 con Onda en Vivo
 
 on:
@@ -13,57 +14,212 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Descargar archivos del repositorio
+      - name: Descargar archivos
         uses: actions/checkout@v4
 
-      - name: Instalar FFmpeg y fuentes de texto
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
-
-      - name: Emitir Directo con Carteles Rotativos Reales
-        env:
-          TZ: 'Europe/Madrid'
-          YT_KEY: ${{ secrets.YOUTUBE_KEY }}
+      - name: Instalar FFmpeg
         run: |
-          cat << 'EOF' > rotulo.txt
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Munoz   ---   
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+
+      - name: Comprobar y preparar emision
+        env:
+          YT_KEY: ${{ secrets.YOUTUBE_KEY }}
+          TZ: Europe/Madrid
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "================================"
+          echo "   ESPIGOLERA RADIO TV"
+          echo "================================"
+
+          if [ -z "${YT_KEY:-}" ]; then
+            echo "ERROR: Falta el secreto YOUTUBE_KEY"
+            exit 1
+          fi
+
+          RTMP="rtmp://a.rtmp.youtube.com/live2/${YT_KEY}"
+
+          mkdir -p musica carteles
+
+          echo "Comprobando FFmpeg..."
+          ffmpeg -version | head -1
+
+          echo "Preparando fondo..."
+
+          if [ -s logo.jpg ]; then
+            BG_IMAGE="logo.jpg"
+          else
+            echo "No hay logo.jpg. Creando fondo alternativo."
+            ffmpeg -nostdin -y -loglevel error \
+              -f lavfi -i "color=c=0x103050:s=1280x720" \
+              -frames:v 1 fondo.jpg
+            BG_IMAGE="fondo.jpg"
+          fi
+
+          cat > rotulo.txt <<'EOF'
+          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUNOZ   ---
           EOF
 
+          echo "Buscando videos promocionales..."
+
+          mapfile -d '' PROMOS < <(
+            find . -maxdepth 1 -type f -iname 'promo*.mp4' \
+              -print0 | sort -z
+          )
+
+          if [ ${#PROMOS[@]} -eq 0 ]; then
+            echo "No hay videos promocionales. Se omiten."
+          fi
+
+          echo "Buscando canciones..."
+
+          mapfile -d '' CANCIONES < <(
+            find musica -type f \
+              \( -iname '*.mp3' -o -iname '*.mpeg' \
+                 -o -iname '*.m4a' -o -iname '*.aac' \
+                 -o -iname '*.ogg' -o -iname '*.wav' \
+                 -o -iname '*.flac' \) \
+              -size +100c -print0 | sort -z
+          )
+
+          if [ ${#CANCIONES[@]} -eq 0 ]; then
+            echo "ERROR: No hay canciones en la carpeta musica."
+            exit 1
+          fi
+
+          echo "Canciones encontradas: ${#CANCIONES[@]}"
+          echo "Videos promocionales: ${#PROMOS[@]}"
+
+          echo "================================"
+          echo "   INICIANDO EMISION"
+          echo "================================"
+
+          # ---------------------------------
+          # 1. VIDEOS PROMOCIONALES
+          # ---------------------------------
+
+          emitir_promo() {
+            local VIDEO="$1"
+            local AUDIO
+
+            echo "Emitiendo promocion: $VIDEO"
+
+            AUDIO=$(ffprobe -v error \
+              -select_streams a:0 \
+              -show_entries stream=codec_type \
+              -of csv=p=0 "$VIDEO" 2>/dev/null || true)
+
+            if [ -n "$AUDIO" ]; then
+
+              ffmpeg -nostdin -hide_banner -loglevel warning \
+                -stats_period 30 -stats -re -i "$VIDEO" \
+                -filter_complex \
+                "[0:v:0]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v];[0:a:0]aresample=44100,aformat=channel_layouts=mono[a]" \
+                -map "[v]" -map "[a]" \
+                -c:v libx264 -preset ultrafast \
+                -b:v 2500k -maxrate 2500k -bufsize 5000k \
+                -r 24 -g 48 \
+                -c:a aac -b:a 128k -ar 44100 -ac 1 \
+                -f flv "$RTMP" || echo "ERROR en promocion: $VIDEO"
+
+            else
+
+              echo "El video no tiene audio. Añadiendo silencio."
+
+              ffmpeg -nostdin -hide_banner -loglevel warning \
+                -stats_period 30 -stats -re -i "$VIDEO" \
+                -f lavfi -i anullsrc=r=44100:cl=mono \
+                -filter_complex \
+                "[0:v:0]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v]" \
+                -map "[v]" -map 1:a:0 \
+                -c:v libx264 -preset ultrafast \
+                -b:v 2500k -maxrate 2500k -bufsize 5000k \
+                -r 24 -g 48 \
+                -c:a aac -b:a 128k -ar 44100 -ac 1 \
+                -shortest -f flv "$RTMP" || echo "ERROR en promocion: $VIDEO"
+
+            fi
+          }
+
+          for VIDEO in "${PROMOS[@]}"; do
+            emitir_promo "$VIDEO"
+          done
+
+          # ---------------------------------
+          # 2. MUSICA CON CARTEL REAL
+          # 3. ONDA ANIMADA
+          # 4. ROTULO DESLIZANTE
+          # ---------------------------------
+
+          emitir_cancion() {
+            local SONG="$1"
+            local CARTEL
+
+            local -a CARTELES=()
+
+            mapfile -d '' CARTELES < <(
+              find carteles -type f \
+                \( -iname '*.jpg' -o -iname '*.jpeg' \
+                   -o -iname '*.png' -o -iname '*.webp' \) \
+                -print0 | sort -z
+            )
+
+            if [ ${#CARTELES[@]} -gt 0 ]; then
+              CARTEL="${CARTELES[$((RANDOM % ${#CARTELES[@]}))]}"
+            else
+              CARTEL="$BG_IMAGE"
+            fi
+
+            echo "================================"
+            echo "Cancion: $SONG"
+            echo "Cartel: $CARTEL"
+            echo "================================"
+
+            ffmpeg -nostdin -hide_banner -loglevel warning \
+              -stats_period 30 -stats \
+              -re -loop 1 -framerate 24 -i "$CARTEL" \
+              -re -i "$SONG" \
+              -filter_complex \
+              "[0:v:0]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[bg];[1:a:0]aresample=44100,aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:reload=1:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
+              -map "[outv]" -map 1:a:0 \
+              -c:v libx264 -preset ultrafast \
+              -pix_fmt yuv420p \
+              -b:v 2500k -maxrate 2500k -bufsize 5000k \
+              -r 24 -g 48 \
+              -c:a aac -b:a 128k -ar 44100 -ac 1 \
+              -shortest -fflags +genpts \
+              -f flv "$RTMP" || echo "ERROR reproduciendo: $SONG"
+          }
+
+          # ---------------------------------
+          # 5. EMISION CONTINUA
+          # ---------------------------------
+
           while true; do
-            echo ">>> [1/3] Reproduciendo videos promocionales"
-            find . -maxdepth 1 -name "promo*.mp4" | shuf > lista_promos.txt || echo "promo.mp4" > lista_promos.txt
 
-            while read -r video; do
-              if [ -f "$video" ]; then
-                echo "Reproduciendo video: $video"
-                ffmpeg -nostats -loglevel error -re -i "$video" \
-                  -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono,aresample=44100[a_out]" \
-                  -map "[v_out]" -map "[a_out]" \
-                  -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
-                  -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
-                  -c:a aac -b:a 128k -ar 44100 \
-                  -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
-              fi
-            done < lista_promos.txt
+            echo "NUEVO CICLO MUSICAL"
 
-            echo ">>> [2/3] Reproduciendo musica con rotacion real de carteles"
-            find musica -type f \( -name "*.mp3" -o -name "*.mpeg" \) ! -size -100c | shuf > lista_musica.txt || echo "Camins_de_pedra.mp3" > lista_musica.txt
-            
-            while read -r song; do
-              if [ -f "$song" ]; then
-                # Creamos una lista limpia con todos los carteles disponibles y seleccionamos uno al azar
-                CARTELL=$(find carteles -type f \( -name "*.jpg" -o -name "*.png" -o -name "*.jpeg" \) | shuf -n 1)
-                if [ -z "$CARTELL" ]; then
-                  CARTELL="logo.jpg"
-                fi
-                echo "Tocando pista: $song con cartel aleatorio: $CARTELL"
+            mapfile -d '' CANCIONES < <(
+              find musica -type f \
+                \( -iname '*.mp3' -o -iname '*.mpeg' \
+                   -o -iname '*.m4a' -o -iname '*.aac' \
+                   -o -iname '*.ogg' -o -iname '*.wav' \
+                   -o -iname '*.flac' \) \
+                -size +100c -print0 | shuf -z
+            )
 
-                ffmpeg -nostats -loglevel error -re -loop 1 -framerate 24 -i "$CARTELL" -i "$song" \
-                  -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[bg];[1:a]aformat=channel_layouts=mono,aresample=44100,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
-                  -map "[outv]" -map 1:a \
-                  -c:v libx264 -preset ultrafast -tune stillimage -pix_fmt yuv420p \
-                  -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
-                  -c:a aac -b:a 128k -ar 44100 \
-                  -shortest -fflags +genpts -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
-              fi
-            done < lista_musica.txt
+            if [ ${#CANCIONES[@]} -eq 0 ]; then
+              echo "ERROR: No quedan canciones."
+              exit 1
+            fi
+
+            for SONG in "${CANCIONES[@]}"; do
+              emitir_cancion "$SONG"
+            done
+
+            echo "Finalizado el ciclo. Volviendo a empezar."
+            sleep 2
+
           done
