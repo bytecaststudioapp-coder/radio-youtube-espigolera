@@ -71,25 +71,17 @@ jobs:
           fi
           echo "Fuente elegida: $FUENTE"
 
-          # ---------- 2. Fondo: fondo.mp4 en bucle si existe, si no logo.jpg ----------
-          # El fondo se prepara UNA vez en formato ligero (1280x720). Si se usara logo.jpg
-          # directamente, ffmpeg lo decodificaria 24 veces por segundo y no llegaria a tiempo.
+          # ---------- 2. Fondo: logo.jpg reducido UNA vez a 1280x720 ----------
+          # Si se usara logo.jpg grande directamente, ffmpeg lo decodificaria 24 veces por
+          # segundo y no llegaria a tiempo real (el directo se atrasa y YouTube lo corta).
           VFB="scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
-          if [ -f fondo.mp4 ]; then
-            echo "Fondo: fondo.mp4 en bucle"
-            ffmpeg -nostdin -loglevel error -y -i fondo.mp4 -an -vf "${VFB},format=yuv420p" \
-              -r 24 -c:v libx264 -preset veryfast -crf 20 -g 48 fondo_loop.mp4
+          if [ -f logo.jpg ] && ffmpeg -nostdin -loglevel error -y -i logo.jpg -vf "${VFB}" -frames:v 1 -update 1 fondo_720.png; then
+            echo "Fondo: logo.jpg reducido a 1280x720"
           else
-            echo "Fondo: logo.jpg"
-            ffmpeg -nostdin -loglevel error -y -i logo.jpg -vf "${VFB}" -frames:v 1 -update 1 fondo_720.png
-            ffmpeg -nostdin -loglevel error -y -loop 1 -framerate 24 -i fondo_720.png -t 5 \
-              -vf format=yuv420p -c:v libx264 -preset veryfast -crf 18 -g 120 -r 24 fondo_loop.mp4
+            echo "!!! No se pudo usar logo.jpg, se usa un fondo azul liso"
+            ffmpeg -nostdin -loglevel error -y -f lavfi -i color=c=0x103050:s=1280x720 -frames:v 1 -update 1 fondo_720.png
           fi
-          if [ ! -f fondo_loop.mp4 ]; then
-            echo "!!! No se pudo preparar el fondo (revisa que exista logo.jpg o fondo.mp4)"
-            exit 1
-          fi
-          BG=(-re -stream_loop -1 -i fondo_loop.mp4)
+          ffmpeg -nostdin -loglevel error -y -i fondo_720.png -q:v 2 -frames:v 1 -update 1 fondo_720.jpg
 
           # ---------- 3. Rotulo con la informacion de info.txt ----------
           actualizar_rotulo() {
@@ -102,11 +94,14 @@ jobs:
 
           # ---------- 3b. Carteles: imagenes de la carpeta carteles/ ----------
           # Cada cartel se ve SHOW_CARTEL segundos; entre uno y otro se ve solo el fondo GAP_CARTEL segundos.
+          # Los carteles se montan sobre el fondo en UN solo video largo (carteles.mp4), asi
+          # al emitir solo hay un video y un audio, sin bucles ni mezclas de varias entradas.
           SHOW_CARTEL=15
           GAP_CARTEL=10
+          SLOT=$(( SHOW_CARTEL + GAP_CARTEL ))
 
           preparar_carteles() {
-            local d="cart_tmp" n=0 f p
+            local d="cart_tmp" n=0 f p reps total
             if ! find carteles -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) 2>/dev/null | grep -q .; then
               rm -f carteles.mp4
               return
@@ -119,34 +114,44 @@ jobs:
                 -frames:v 1 -update 1 "$d/$(printf '%03d' "$n").png" \
                 || echo "!!! No se pudo preparar el cartel: $f"
             done < <(find carteles -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) | sort)
-            # Imagen magenta: se hace transparente al emitir (es el "fondo solo")
-            ffmpeg -nostdin -loglevel error -y -f lavfi -i color=c=0xFF00FF:s=1280x720 -frames:v 1 -update 1 "$d/gap.png"
-            : > "$d/lista.txt"
+            # Secuencia: fondo solo, cartel 1, fondo solo, cartel 2, ...
+            : > "$d/seq.txt"
+            total=0
             for p in "$d"/[0-9]*.png; do
               [ -f "$p" ] || continue
-              printf "file '%s'\nduration %s\nfile '%s'\nduration %s\n" "$PWD/$d/gap.png" "$GAP_CARTEL" "$PWD/$p" "$SHOW_CARTEL" >> "$d/lista.txt"
+              printf "file '%s'\nduration %s\nfile '%s'\nduration %s\n" "$PWD/fondo_720.png" "$GAP_CARTEL" "$PWD/$p" "$SHOW_CARTEL" >> "$d/seq.txt"
+              total=$(( total + SLOT ))
             done
-            printf "file '%s'\n" "$PWD/$d/gap.png" >> "$d/lista.txt"
-            if ffmpeg -nostdin -loglevel error -y -f concat -safe 0 -i "$d/lista.txt" \
-                 -vf "fps=2,format=yuv420p" -c:v libx264 -preset veryfast -crf 18 carteles_nuevo.mp4; then
+            printf "file '%s'\n" "$PWD/fondo_720.png" >> "$d/seq.txt"
+            if [ "$total" -eq 0 ]; then echo "!!! No hay carteles validos"; rm -f carteles.mp4; return; fi
+            if ! ffmpeg -nostdin -loglevel error -y -f concat -safe 0 -i "$d/seq.txt" \
+                 -vf "fps=24,format=yuv420p" -c:v libx264 -preset veryfast -crf 23 -g 48 -bf 0 "$d/seq.mp4"; then
+              echo "!!! No se pudo crear el video de carteles"; return
+            fi
+            # Se repite la secuencia hasta cubrir mas de 1300 s (un bloque de emision) sin recodificar
+            reps=$(( 1300 / total + 1 ))
+            : > "$d/rep.txt"
+            for ((k=0; k<reps; k++)); do printf "file '%s'\n" "$PWD/$d/seq.mp4" >> "$d/rep.txt"; done
+            if ffmpeg -nostdin -loglevel error -y -f concat -safe 0 -i "$d/rep.txt" -c copy carteles_nuevo.mp4; then
               mv -f carteles_nuevo.mp4 carteles.mp4
-              echo "Carteles preparados: $n"
+              echo "Carteles preparados: $n (secuencia de ${total}s repetida ${reps} veces)"
             else
-              echo "!!! No se pudo crear el video de carteles"
+              echo "!!! No se pudo alargar el video de carteles"
             fi
           }
 
           # Elige si se ven carteles (si hay) o el rotulo deslizante
           montar_video() {
-            FILTRO="[0:v]${VF}[bg];[1:a]aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda]"
+            local onda="[1:a]aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda]"
             if [ -f carteles.mp4 ]; then
               echo "Modo: carteles"
-              CART=(-re -stream_loop -1 -i carteles.mp4)
-              FILTRO="${FILTRO};[2:v]scale=1280:720,format=rgba,colorkey=0xFF00FF:0.12:0.0[cart];[con_onda][cart]overlay=0:0:format=auto,format=yuv420p[outv]"
+              BG=(-re -i carteles.mp4)
+              # La onda solo se dibuja cuando no hay cartel en pantalla
+              FILTRO="[0:v]format=yuv420p[bg];${onda};[bg][onda]overlay=0:H-h-60:enable='lt(mod(t,${SLOT}),${GAP_CARTEL})',format=yuv420p[outv]"
             else
               echo "Modo: rotulo deslizante"
-              CART=()
-              FILTRO="${FILTRO};[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]"
+              BG=(-re -loop 1 -framerate 24 -i fondo_720.jpg)
+              FILTRO="[0:v]${VF}[bg];${onda};[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]"
             fi
           }
 
@@ -179,7 +184,6 @@ jobs:
             ls norm/*.mp3 | shuf | sed "s|^|file '$PWD/|; s|\$|'|" > lista.txt
             timeout 1300 ffmpeg -loglevel warning "${BG[@]}" \
               -re -stream_loop -1 -f concat -safe 0 -i lista.txt \
-              "${CART[@]}" \
               -filter_complex "$FILTRO" \
               -map "[outv]" -map 1:a -t 1200 \
               "${OUT[@]}" || echo "!!! El bloque de musica termino con error"
@@ -196,7 +200,6 @@ jobs:
             timeout 1300 ffmpeg -loglevel warning "${BG[@]}" \
               -thread_queue_size 4096 -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
               -i "$STREAM_URL" \
-              "${CART[@]}" \
               -filter_complex "$FILTRO" \
               -map "[outv]" -map 1:a -t 1200 \
               "${OUT[@]}" || echo "!!! El bloque de radio termino con error"
