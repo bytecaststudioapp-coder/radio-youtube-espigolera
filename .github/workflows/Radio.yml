@@ -19,7 +19,7 @@ jobs:
       - name: Instalar FFmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core bc
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       - name: Comprobar y preparar emision
         env:
@@ -58,7 +58,7 @@ jobs:
           fi
 
           cat > rotulo.txt <<'EOF'
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUÑOZ   ---
+          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   Todos los DOMINGOS (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUñOZ   ---
           EOF
 
           echo "Buscando videos promocionales..."
@@ -154,39 +154,36 @@ jobs:
 
           emitir_cancion() {
             local SONG="$1"
-            local DURATION
-            local CURRENT=0
             local CARTEL
             local -a CARTELES=()
-
-            # Obtener la duración total de la canción en segundos
-            DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$SONG" 2>/dev/null || echo "180")
 
             mapfile -d '' CARTELES < <(
               find carteles -type f \
                 \( -iname '*.jpg' -o -iname '*.jpeg' \
-                   -o -iname '*.png' -o -iname '*.webp' \
-                   -print0 2>/dev/null \) | sort -z
+                   -o -iname '*.png' -o -iname '*.webp' \) \
+                -print0 2>/dev/null | sort -z
             )
 
             echo "================================"
-            echo "Reproduciendo cancion: $SONG (Duracion: ${DURATION}s)"
+            echo "Reproduciendo cancion: $SONG con rotacion de carteles"
             echo "================================"
 
-            # Bucle para cambiar de cartel cada 30 segundos mientras suena la canción
-            while (( $(echo "$CURRENT < $DURATION" | bc -l) )); do
+            # Reproduce la canción completa en bloques de 30 segundos cambiando de cartel en cada salto
+            local OFFSET=0
+            while true; do
               if [ ${#CARTELES[@]} -gt 0 ]; then
                 CARTEL="${CARTELES[$((RANDOM % ${#CARTELES[@]}))]}"
               else
                 CARTEL="$BG_IMAGE"
               fi
 
-              echo "-> Cartel activo actual: $CARTEL (Desde segundo $CURRENT)"
+              echo "-> Mostrando cartel rotativo: $CARTEL (desde segundo $OFFSET)"
 
+              # Emitimos bloques de 30 segundos. Si la canción termina, FFmpeg finaliza el bloque limpiamente.
               ffmpeg -nostdin -hide_banner -loglevel warning \
                 -stats_period 30 -stats \
-                -re -ss "$CURRENT" -loop 1 -framerate 24 -i "$CARTEL" \
-                -re -ss "$CURRENT" -i "$SONG" -t 30 \
+                -re -ss "$OFFSET" -loop 1 -framerate 24 -i "$CARTEL" \
+                -re -ss "$OFFSET" -i "$SONG" -t 30 \
                 -filter_complex \
                 "[0:v:0]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[bg];[1:a:0]aresample=44100,aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:reload=1:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
                 -map "[outv]" -map 1:a:0 \
@@ -196,9 +193,17 @@ jobs:
                 -r 24 -g 48 \
                 -c:a aac -b:a 128k -ar 44100 -ac 1 \
                 -shortest -fflags +genpts \
-                -f flv "$RTMP" || echo "ERROR en tramo de cancion: $SONG"
+                -f flv "$RTMP" || break
 
-              CURRENT=$((CURRENT + 30))
+              # Incrementamos 30 segundos para el siguiente bloque de la misma canción
+              OFFSET=$((OFFSET + 30))
+
+              # Comprobamos si hemos sobrepasado la duración del archivo mediante ffprobe de seguridad
+              local TOTAL_DUR
+              TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$SONG" 2>/dev/null || echo "0")
+              if (( $(echo "$OFFSET >= ${TOTAL_DUR%.*}" | bc -l 2>/dev/null || echo "0") )); then
+                break
+              fi
             done
           }
 
