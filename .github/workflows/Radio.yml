@@ -1,30 +1,11 @@
-name: Radio 24h Musica libre e informacion local
+name: Radio 24/7 con Onda en Vivo
 
 on:
   workflow_dispatch:
-    inputs:
-      fuente:
-        description: 'Que emitir: musica (libre de derechos) o radio (senal de la emisora)'
-        type: choice
-        default: musica
-        options:
-          - musica
-          - radio
-      carteles:
-        description: 'Carteles de la carpeta carteles/ en lugar del rotulo deslizante (en pruebas)'
-        type: choice
-        default: 'no'
-        options:
-          - 'no'
-          - 'si'
 
 concurrency:
   group: radio-stream
-  cancel-in-progress: false
-
-permissions:
-  contents: read
-  actions: write
+  cancel-in-progress: true
 
 jobs:
   stream:
@@ -38,206 +19,55 @@ jobs:
       - name: Instalar FFmpeg y fuentes de texto
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Emitir musica, promos e informacion
+      - name: Emitir Promo, Promo1 y Musica con Carteles Dinamicos
         env:
           TZ: 'Europe/Madrid'
           YT_KEY: ${{ secrets.YOUTUBE_KEY }}
-          STREAM_URL: ${{ secrets.RADIO_URL }}
-          FUENTE: ${{ inputs.fuente }}
-          CARTELES: ${{ inputs.carteles }}
         run: |
-          RTMP="rtmp://a.rtmp.youtube.com/live2/$YT_KEY"
-          # Se detiene a los 325 min para dejar margen antes del limite de GitHub (350 min)
-          FIN=$(( $(date +%s) + 19500 ))
+          cat << 'EOF' > rotulo.txt
+          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Munoz   ---   
+          EOF
 
-          VF="scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
-          OUT=(-c:v libx264 -preset ultrafast -pix_fmt yuv420p
-               -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48
-               -c:a aac -b:a 128k -ar 44100
-               -f flv "$RTMP")
+          while true; do
+            echo "=== EMITIENDO promo.mp4 ==="
+            ffmpeg -re -i promo.mp4 \
+              -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono,ar=44100[a_out]" \
+              -map "[v_out]" -map "[a_out]" \
+              -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+              -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
+              -c:a aac -b:a 128k -ar 44100 \
+              -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
 
-          echo "--- Archivos del repositorio ---"
-          ls -la
-          ls -la musica | head -50
+            echo "=== EMITIENDO promo1.mp4 ==="
+            ffmpeg -re -i promo1.mp4 \
+              -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono,ar=44100[a_out]" \
+              -map "[v_out]" -map "[a_out]" \
+              -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+              -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
+              -c:a aac -b:a 128k -ar 44100 \
+              -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
 
-          # ---------- 1. Preparar la musica (mismo formato y volumen) ----------
-          if [ "$FUENTE" != "radio" ]; then
-          mkdir -p norm
-          i=0
-          while IFS= read -r f; do
-            i=$((i+1))
-            ffmpeg -nostdin -loglevel error -y -i "$f" -vn -af loudnorm=I=-16:TP=-1.5:LRA=11 \
-              -ar 44100 -ac 2 -c:a libmp3lame -b:a 192k "norm/$(printf '%04d' "$i").mp3" \
-              || echo "!!! No se pudo convertir: $f"
-          done < <(find musica -type f \( -iname '*.mp3' -o -iname '*.mpeg' -o -iname '*.mpga' -o -iname '*.mp2' -o -iname '*.mpg' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.ogg' -o -iname '*.wav' -o -iname '*.flac' \) | sort)
-
-          if ! ls norm/*.mp3 >/dev/null 2>&1; then
-            echo "!!! No hay musica en la carpeta musica/. Sube archivos MP3 y vuelve a lanzar."
-            exit 1
-          fi
-          echo "Pistas preparadas: $(ls norm/*.mp3 | wc -l)"
-          fi
-          echo "Fuente elegida: $FUENTE"
-
-          # ---------- 2. Fondo: logo.jpg reducido UNA vez a 1280x720 ----------
-          # Si se usara logo.jpg grande directamente, ffmpeg lo decodificaria 24 veces por
-          # segundo y no llegaria a tiempo real (el directo se atrasa y YouTube lo corta).
-          VFB="scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
-          if [ -f logo.jpg ] && ffmpeg -nostdin -loglevel error -y -i logo.jpg -vf "${VFB}" -frames:v 1 -update 1 fondo_720.png; then
-            echo "Fondo: logo.jpg reducido a 1280x720"
-          else
-            echo "!!! No se pudo usar logo.jpg, se usa un fondo azul liso"
-            ffmpeg -nostdin -loglevel error -y -f lavfi -i color=c=0x103050:s=1280x720 -frames:v 1 -update 1 fondo_720.png
-          fi
-          ffmpeg -nostdin -loglevel error -y -i fondo_720.png -q:v 2 -frames:v 1 -update 1 fondo_720.jpg
-
-          # ---------- 3. Rotulo con la informacion de info.txt ----------
-          actualizar_rotulo() {
-            local txt
-            txt=$(cat info.txt 2>/dev/null)
-            txt=$(printf '%s\n' "$txt" | tr -d '\r' | grep -v '^[[:space:]]*$' | sed 's/%//g; s/\\//g' | paste -sd'|' | sed 's/|/   |   /g')
-            printf '%s' "*** ESPIGOLERA RADIO TV ***   ${txt}   ---   " > rotulo.txt
-            echo "Rotulo actualizado: $(wc -c < rotulo.txt) caracteres"
-          }
-
-          # ---------- 3b. Carteles: imagenes de la carpeta carteles/ ----------
-          # Cada cartel se ve SHOW_CARTEL segundos; entre uno y otro se ve solo el fondo GAP_CARTEL segundos.
-          # Los carteles se montan sobre el fondo en UN solo video largo (carteles.mp4), asi
-          # al emitir solo hay un video y un audio, sin bucles ni mezclas de varias entradas.
-          SHOW_CARTEL=15
-          GAP_CARTEL=10
-          SLOT=$(( SHOW_CARTEL + GAP_CARTEL ))
-
-          preparar_carteles() {
-            local d="cart_tmp" n=0 f p reps total
-            if [ "$CARTELES" != "si" ]; then rm -f carteles.mp4; return; fi
-            if ! find carteles -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) 2>/dev/null | grep -q .; then
-              rm -f carteles.mp4
-              return
+            echo "=== EMITIENDO MUSICA CON CARTELES Y ROTULOS ==="
+            # Selecciona de forma aleatoria canciones y carteles disponibles
+            find musica -type f \( -name "*.mp3" -o -name "*.mpeg" \) ! -size -100c | shuf > lista_musica.txt || echo "Camins_de_pedra.mp3" > lista_musica.txt
+            
+            # Si tienes una carpeta de carteles, usa uno aleatorio; si no, usa el logo.jpg
+            CARTELL=$(find carteles -type f \( -name "*.jpg" -o -name "*.png" \) 2>/dev/null | shuf -n 1)
+            if [ -z "$CARTELL" ]; then
+              CARTELL="logo.jpg"
             fi
-            rm -rf "$d"; mkdir -p "$d"
-            while IFS= read -r f; do
-              n=$((n+1))
-              ffmpeg -nostdin -loglevel error -y -i "$f" \
-                -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1" \
-                -frames:v 1 -update 1 "$d/$(printf '%03d' "$n").png" \
-                || echo "!!! No se pudo preparar el cartel: $f"
-            done < <(find carteles -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) | sort)
-            # Secuencia: fondo solo, cartel 1, fondo solo, cartel 2, ...
-            : > "$d/seq.txt"
-            total=0
-            for p in "$d"/[0-9]*.png; do
-              [ -f "$p" ] || continue
-              printf "file '%s'\nduration %s\nfile '%s'\nduration %s\n" "$PWD/fondo_720.png" "$GAP_CARTEL" "$PWD/$p" "$SHOW_CARTEL" >> "$d/seq.txt"
-              total=$(( total + SLOT ))
-            done
-            printf "file '%s'\n" "$PWD/fondo_720.png" >> "$d/seq.txt"
-            if [ "$total" -eq 0 ]; then echo "!!! No hay carteles validos"; rm -f carteles.mp4; return; fi
-            if ! ffmpeg -nostdin -loglevel error -y -f concat -safe 0 -i "$d/seq.txt" \
-                 -vf "fps=24,format=yuv420p" -c:v libx264 -preset veryfast -crf 23 -g 48 -bf 0 "$d/seq.mp4"; then
-              echo "!!! No se pudo crear el video de carteles"; return
-            fi
-            # Se repite la secuencia hasta cubrir mas de 1300 s (un bloque de emision) sin recodificar
-            reps=$(( 1300 / total + 1 ))
-            : > "$d/rep.txt"
-            for ((k=0; k<reps; k++)); do printf "file '%s'\n" "$PWD/$d/seq.mp4" >> "$d/rep.txt"; done
-            if ffmpeg -nostdin -loglevel error -y -f concat -safe 0 -i "$d/rep.txt" -c copy carteles_nuevo.mp4; then
-              mv -f carteles_nuevo.mp4 carteles.mp4
-              echo "Carteles preparados: $n (secuencia de ${total}s repetida ${reps} veces)"
-            else
-              echo "!!! No se pudo alargar el video de carteles"
-            fi
-          }
+            echo "Cartel seleccionado para este bloque musical: $CARTELL"
 
-          # Elige si se ven carteles (si hay) o el rotulo deslizante
-          montar_video() {
-            local onda="[1:a]aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda]"
-            if [ -f carteles.mp4 ]; then
-              echo "Modo: carteles"
-              BG=(-re -i carteles.mp4)
-              # La onda solo se dibuja cuando no hay cartel en pantalla
-              FILTRO="[0:v]format=yuv420p[bg];${onda};[bg][onda]overlay=0:H-h-60:enable='lt(mod(t,${SLOT}),${GAP_CARTEL})',format=yuv420p[outv]"
-            else
-              echo "Modo: rotulo deslizante"
-              BG=(-re -loop 1 -framerate 24 -i fondo_720.jpg)
-              FILTRO="[0:v]${VF}[bg];${onda};[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]"
-            fi
-          }
-
-          # ---------- 4. Videos promo ----------
-          emitir_video() {
-            local f="$1"
-            if [ ! -f "$f" ]; then
-              echo "(no existe $f, se omite)"
-              return
-            fi
-            echo "=== EMITIENDO $f ==="
-            if ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "$f" | grep -q audio; then
-              ffmpeg -loglevel warning -re -i "$f" \
-                -filter_complex "[0:v]${VF}[v_out];[0:a]aformat=sample_rates=44100:channel_layouts=mono[a_out]" \
-                -map "[v_out]" -map "[a_out]" -t 180 \
-                "${OUT[@]}" || echo "!!! ffmpeg fallo con $f"
-            else
-              ffmpeg -loglevel warning -re -i "$f" \
-                -f lavfi -i anullsrc=r=44100:cl=mono \
-                -filter_complex "[0:v]${VF}[v_out]" \
-                -map "[v_out]" -map 1:a -t 180 -shortest \
-                "${OUT[@]}" || echo "!!! ffmpeg fallo con $f"
-            fi
-          }
-
-          # ---------- 5. Bloque de musica con onda y rotulo (20 min) ----------
-          emitir_musica() {
-            echo "=== EMITIENDO MUSICA ($(date +%H:%M:%S)) ==="
-            local t0; t0=$(date +%s)
-            montar_video
-            ls norm/*.mp3 | shuf | sed "s|^|file '$PWD/|; s|\$|'|" > lista.txt
-            timeout 1300 ffmpeg -loglevel warning -stats -stats_period 60 "${BG[@]}" \
-              -re -stream_loop -1 -f concat -safe 0 -i lista.txt \
-              -filter_complex "$FILTRO" \
-              -map "[outv]" -map 1:a -t 1200 \
-              "${OUT[@]}" || echo "!!! La musica se corto a los $(( $(date +%s) - t0 )) segundos (a las $(date +%H:%M:%S)). Si lo corta YouTube: revisa Derechos de autor en Studio"
-          }
-
-          # ---------- 6. Bloque de radio en directo con onda y rotulo (20 min) ----------
-          emitir_radio() {
-            echo "=== EMITIENDO RADIO ($(date +%H:%M:%S)) ==="
-            local t0; t0=$(date +%s)
-            if [ -z "$STREAM_URL" ]; then
-              echo "!!! Falta el secreto RADIO_URL"
-              return
-            fi
-            montar_video
-            timeout 1300 ffmpeg -loglevel warning -stats -stats_period 60 "${BG[@]}" \
-              -thread_queue_size 4096 -reconnect 1 -reconnect_at_eof 1 -reconnect_streamed 1 -reconnect_delay_max 5 \
-              -i "$STREAM_URL" \
-              -filter_complex "$FILTRO" \
-              -map "[outv]" -map 1:a -t 1200 \
-              "${OUT[@]}" || echo "!!! La radio se corto a los $(( $(date +%s) - t0 )) segundos (a las $(date +%H:%M:%S))"
-          }
-
-          # ---------- Bucle principal ----------
-          while [ "$(date +%s)" -lt "$FIN" ]; do
-            # Baja los cambios que hayas subido a GitHub (carteles nuevos, info.txt...)
-            git pull --ff-only -q 2>/dev/null || echo "(no se pudo actualizar desde el repositorio)"
-            actualizar_rotulo
-            # Los carteles se preparan mientras salen las promos
-            preparar_carteles &
-            PREP=$!
-            emitir_video promo.mp4
-            emitir_video promo1.mp4
-            wait $PREP
-            if [ "$FUENTE" = "radio" ]; then
-              emitir_radio
-            else
-              emitir_musica
-            fi
-            sleep 3
+            while read -r song; do
+              if [ -f "$song" ]; then
+                echo "Reproduciendo pista: $song con cartel $CARTELL"
+                ffmpeg -re -loop 1 -framerate 24 -i "$CARTELL" -i "$song" \
+                  -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[bg];[1:a]aformat=channel_layouts=mono,ar=44100,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
+                  -map "[outv]" -map 1:a \
+                  -c:v libx264 -preset ultrafast -tune stillimage -pix_fmt yuv420p \
+                  -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k -r 24 -g 48 \
+                  -c:a aac -b:a 128k -ar 44100 \
+                  -shortest -fflags +genpts -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
+              fi
+            done < lista_musica.txt
           done
-
-      - name: Relanzar la emision automaticamente
-        env:
-          GH_TOKEN: ${{ github.token }}
-          FUENTE: ${{ inputs.fuente }}
-          CARTELES: ${{ inputs.carteles }}
-        run: gh workflow run "$GITHUB_WORKFLOW" -f fuente="$FUENTE" -f carteles="$CARTELES"
