@@ -19,23 +19,22 @@ jobs:
       - name: Instalar FFmpeg y fuentes de texto
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Emitir Directo con Videos y Carteles Rotativos
+      - name: Emitir Directo con Carteles Rotativos Reales
         env:
           TZ: 'Europe/Madrid'
           YT_KEY: ${{ secrets.YOUTUBE_KEY }}
         run: |
           cat << 'EOF' > rotulo.txt
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Muñoz   ---   
+          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (de 17.00 a 18.00 h) Entrevista con Tomas Sastre, exconcejal del Ayuntamiento de Llucmajor   |   RESTO DE DIAS Musica ininterrumpida 24 horas   |   Presenta Santiago Munoz   ---   
           EOF
 
           while true; do
-            echo ">>> [1/3] Reproduciendo videos promocionales en orden aleatorio"
-            # Baraja los videos promo.mp4 y promo1.mp4 para que no salgan siempre en el mismo orden
+            echo ">>> [1/3] Reproduciendo videos promocionales"
             find . -maxdepth 1 -name "promo*.mp4" | shuf > lista_promos.txt || echo "promo.mp4" > lista_promos.txt
 
             while read -r video; do
               if [ -f "$video" ]; then
-                echo "Reproduciendo video promocional: $video"
+                echo "Reproduciendo video: $video"
                 ffmpeg -nostats -loglevel error -re -i "$video" \
                   -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono,aresample=44100[a_out]" \
                   -map "[v_out]" -map "[a_out]" \
@@ -46,17 +45,17 @@ jobs:
               fi
             done < lista_promos.txt
 
-            echo ">>> [2/3] Reproduciendo bloques de musica y rotando carteles"
+            echo ">>> [2/3] Reproduciendo musica con rotacion real de carteles"
             find musica -type f \( -name "*.mp3" -o -name "*.mpeg" \) ! -size -100c | shuf > lista_musica.txt || echo "Camins_de_pedra.mp3" > lista_musica.txt
             
             while read -r song; do
               if [ -f "$song" ]; then
-                # Selecciona un cartel totalmente aleatorio de la carpeta carteles en cada canción
-                CARTELL=$(ls carteles/*.jpg carteles/*.png carteles/*.jpeg 2>/dev/null | shuf -n 1)
+                # Creamos una lista limpia con todos los carteles disponibles y seleccionamos uno al azar
+                CARTELL=$(find carteles -type f \( -name "*.jpg" -o -name "*.png" -o -name "*.jpeg" \) | shuf -n 1)
                 if [ -z "$CARTELL" ]; then
                   CARTELL="logo.jpg"
                 fi
-                echo "Tocando pista: $song con cartel rotativo: $CARTELL"
+                echo "Tocando pista: $song con cartel aleatorio: $CARTELL"
 
                 ffmpeg -nostats -loglevel error -re -loop 1 -framerate 24 -i "$CARTELL" -i "$song" \
                   -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[bg];[1:a]aformat=channel_layouts=mono,aresample=44100,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
