@@ -19,7 +19,7 @@ jobs:
       - name: Instalar FFmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          sudo apt-get install -y ffmpeg fonts-dejavu-core bc
 
       - name: Comprobar y preparar emision
         env:
@@ -58,7 +58,7 @@ jobs:
           fi
 
           cat > rotulo.txt <<'EOF'
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   Todos los DOMINGOS (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUñOZ   ---
+          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   TODOS LOS DOMINGOS (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUÑOZ   ---
           EOF
 
           echo "Buscando videos promocionales..."
@@ -96,14 +96,14 @@ jobs:
           echo "================================"
 
           # ---------------------------------
-          # 1. VIDEOS PROMOCIONALES
+          # 1. VIDEOS PROMOCIONALES (A pantalla completa con su propio vídeo y audio)
           # ---------------------------------
 
           emitir_promo() {
             local VIDEO="$1"
             local AUDIO
 
-            echo "Emitiendo promocion: $VIDEO"
+            echo "Emitiendo promocion (pantalla completa): $VIDEO"
 
             AUDIO=$(ffprobe -v error \
               -select_streams a:0 \
@@ -147,9 +147,8 @@ jobs:
           done
 
           # ---------------------------------
-          # 2. MUSICA CON CARTELES ROTATIVOS CADA 30S
-          # 3. ONDA ANIMADA
-          # 4. ROTULO DESLIZANTE
+          # 2. MUSICA CON LOGO DE FONDO FIJO Y CARTELES ROTATIVOS CADA 30S
+          # 3. ONDA ANIMADA Y ROTULO DESLIZANTE
           # ---------------------------------
 
           emitir_cancion() {
@@ -165,10 +164,9 @@ jobs:
             )
 
             echo "================================"
-            echo "Reproduciendo cancion: $SONG con rotacion de carteles"
+            echo "Reproduciendo cancion con logo fijo y carteles superpuestos: $SONG"
             echo "================================"
 
-            # Reproduce la canción completa en bloques de 30 segundos cambiando de cartel en cada salto
             local OFFSET=0
             while true; do
               if [ ${#CARTELES[@]} -gt 0 ]; then
@@ -177,16 +175,21 @@ jobs:
                 CARTEL="$BG_IMAGE"
               fi
 
-              echo "-> Mostrando cartel rotativo: $CARTEL (desde segundo $OFFSET)"
+              echo "-> Fondo: $BG_IMAGE | Cartel encima: $CARTEL (desde segundo $OFFSET)"
 
-              # Emitimos bloques de 30 segundos. Si la canción termina, FFmpeg finaliza el bloque limpiamente.
               ffmpeg -nostdin -hide_banner -loglevel warning \
                 -stats_period 30 -stats \
-                -re -ss "$OFFSET" -loop 1 -framerate 24 -i "$CARTEL" \
+                -loop 1 -framerate 24 -i "$BG_IMAGE" \
+                -loop 1 -framerate 24 -i "$CARTEL" \
                 -re -ss "$OFFSET" -i "$SONG" -t 30 \
                 -filter_complex \
-                "[0:v:0]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[bg];[1:a:0]aresample=44100,aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:reload=1:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
-                -map "[outv]" -map 1:a:0 \
+                "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[bg]; \
+                 [1:v]scale=820:460:force_original_aspect_ratio=decrease,format=yuv420p[poster]; \
+                 [bg][poster]overlay=(W-w)/2:(H-h)/2-40[con_cartel]; \
+                 [2:a:0]aresample=44100,aformat=channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda]; \
+                 [con_cartel][onda]overlay=0:H-h-60[con_onda]; \
+                 [con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:reload=1:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
+                -map "[outv]" -map 2:a:0 \
                 -c:v libx264 -preset ultrafast \
                 -pix_fmt yuv420p \
                 -b:v 2500k -maxrate 2500k -bufsize 5000k \
@@ -195,13 +198,11 @@ jobs:
                 -shortest -fflags +genpts \
                 -f flv "$RTMP" || break
 
-              # Incrementamos 30 segundos para el siguiente bloque de la misma canción
               OFFSET=$((OFFSET + 30))
 
-              # Comprobamos si hemos sobrepasado la duración del archivo mediante ffprobe de seguridad
               local TOTAL_DUR
               TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$SONG" 2>/dev/null || echo "0")
-              if (( $(echo "$OFFSET >= ${TOTAL_DUR%.*}" | bc -l 2>/dev/null || echo "0") )); then
+              if (( $(echo "$OFFSET >= ${TOTAL_DUR%.*:-0}" | bc -l 2>/dev/null || echo "0") )); then
                 break
               fi
             done
