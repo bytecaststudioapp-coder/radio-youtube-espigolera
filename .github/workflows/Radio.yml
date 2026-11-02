@@ -58,7 +58,7 @@ jobs:
           fi
 
           cat > rotulo.txt <<'EOF'
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUNOZ   ---
+          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   HOY DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUÑOZ   ---
           EOF
 
           echo "Buscando videos promocionales..."
