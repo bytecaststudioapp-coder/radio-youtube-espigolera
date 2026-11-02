@@ -13,422 +13,383 @@ permissions:
   actions: write
 
 jobs:
-  stream:
+  emitir:
     runs-on: ubuntu-latest
     timeout-minutes: 350
 
     steps:
-      - name: Descargar archivos
+      - name: Descargar repositorio
         uses: actions/checkout@v4
 
-      - name: Instalar FFmpeg
+      - name: Instalar FFmpeg y fuentes
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Comprobar y preparar emisión
-        env:
-          YT_KEY: ${{ secrets.YOUTUBE_KEY }}
-          TZ: Europe/Madrid
+      - name: Preparar archivos
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          trap 'echo "Finalizando proceso..."; kill $(jobs -p) 2>/dev/null || true' SIGINT SIGTERM
-
-          echo "================================"
-          echo "       ESPIGOLERA RADIO TV"
-          echo "================================"
-
-          if [ -z "${YT_KEY:-}" ]; then
-            echo "ERROR: Falta YOUTUBE_KEY"
-            exit 1
-          fi
-
-          RTMP="rtmp://a.rtmp.youtube.com/live2/${YT_KEY}"
-
-          # Emisión de 330 minutos.
-          # Se deja margen para finalizar y relanzar antes del límite.
-          FIN=$(( $(date +%s) + 19800 ))
-
           mkdir -p musica carteles
 
-          echo "FFmpeg:"
-          ffmpeg -version | head -1
-
-          # ---------------------------------
-          # 1. PREPARAR LOGO PERMANENTE
-          # ---------------------------------
-
-          echo "Preparando fondo..."
-
-          if [ -s logo.jpg ]; then
-            BG_IMAGE="logo.jpg"
-          else
-            echo "No existe logo.jpg. Creando fondo alternativo."
-
-            ffmpeg -nostdin -y -loglevel error \
-              -f lavfi -i "color=c=0x103050:s=1280x720" \
-              -frames:v 1 fondo.jpg
-
-            BG_IMAGE="fondo.jpg"
-          fi
-
-          # ---------------------------------
-          # 2. ROTULO INFORMATIVO
-          # ---------------------------------
-
-          cat > rotulo.txt <<'EOF'
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   TODOS LOS DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUÑOZ   ---
-          EOF
-
-          # ---------------------------------
-          # 3. BUSCAR PROMOCIONES
-          # ---------------------------------
-
-          mapfile -d '' PROMOS < <(
-            find . -maxdepth 1 -type f \
-              -iname 'promo*.mp4' -print0 | sort -z
-          )
-
-          echo "Promociones encontradas: ${#PROMOS[@]}"
-
-          # ---------------------------------
-          # 4. BUSCAR CANCIONES
-          # ---------------------------------
-
-          mapfile -d '' CANCIONES < <(
-            find musica -type f \
-              \( -iname '*.mp3' -o -iname '*.mpeg' \
-                 -o -iname '*.m4a' -o -iname '*.aac' \
-                 -o -iname '*.ogg' -o -iname '*.wav' \
-                 -o -iname '*.flac' \) \
-              -size +100c -print0 | sort -z
-          )
-
-          if [ ${#CANCIONES[@]} -eq 0 ]; then
-            echo "ERROR: No hay canciones."
+          if [[ ! -f logo.jpg ]]; then
+            echo "ERROR: Falta logo.jpg en la raíz del repositorio."
             exit 1
           fi
 
-          echo "Canciones encontradas: ${#CANCIONES[@]}"
+          if [[ ! -f rotulo.txt ]]; then
+            echo "RADIO EN DIRECTO" > rotulo.txt
+          fi
 
-          # ---------------------------------
-          # 5. PREPARAR CARTELES
-          # ---------------------------------
+          echo "Archivos preparados."
 
-          preparar_video_carteles() {
+      - name: Emitir radio en YouTube
+        shell: bash
+        env:
+          YOUTUBE_KEY: ${{ secrets.YOUTUBE_KEY }}
+        run: |
+          set -Eeuo pipefail
 
-            local D="carteles_tmp"
-            local f p n=0
-            local -a LISTA=()
+          if [[ -z "${YOUTUBE_KEY:-}" ]]; then
+            echo "ERROR: Falta el secreto YOUTUBE_KEY."
+            exit 1
+          fi
 
-            rm -rf "$D"
-            mkdir -p "$D"
+          RTMP="rtmp://a.rtmp.youtube.com/live2/${YOUTUBE_KEY}"
+          BG_IMAGE="$PWD/logo.jpg"
+          CARTEL_VIDEO="$RUNNER_TEMP/carteles_video.mp4"
+          CARTEL_DIR="$RUNNER_TEMP/carteles_preparados"
+          CONCAT_FILE="$RUNNER_TEMP/carteles.txt"
 
-            mapfile -d '' LISTA < <(
-              find carteles -type f \
-                \( -iname '*.jpg' -o -iname '*.jpeg' \
-                   -o -iname '*.png' -o -iname '*.webp' \) \
-                -print0 | sort -z
-            )
+          mkdir -p "$CARTEL_DIR"
 
-            if [ ${#LISTA[@]} -eq 0 ]; then
-              echo "No hay carteles disponibles."
-              rm -f carteles_video.mp4
-              return 0
-            fi
+          # ------------------------------------------
+          # PREPARAR CARTELES: 30 SEGUNDOS CADA UNO
+          # ------------------------------------------
 
-            : > "$D/secuencia.txt"
+          mapfile -d '' CARTEL_FILES < <(
+            find carteles -maxdepth 1 -type f \
+              \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) \
+              -print0 | sort -z
+          )
 
-            for f in "${LISTA[@]}"; do
+          HAY_CARTELES=0
 
-              p="$PWD/$D/$(printf '%04d' "$((n+1))").png"
+          if (( ${#CARTEL_FILES[@]} > 0 )); then
 
-              if ffmpeg -nostdin -y -loglevel error \
-                -i "$f" \
-                -vf "scale=820:460:force_original_aspect_ratio=decrease,pad=820:460:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1" \
-                -frames:v 1 "$p"; then
+            echo "Preparando ${#CARTEL_FILES[@]} carteles..."
 
-                n=$((n+1))
+            NUMERO=0
 
-                printf "file '%s'\nduration 30\n" "$p" \
-                  >> "$D/secuencia.txt"
+            for CARTEL in "${CARTEL_FILES[@]}"; do
+              NUMERO=$((NUMERO + 1))
+              printf -v NOMBRE "%04d.png" "$NUMERO"
 
-                echo "Cartel preparado: $f"
-
-              else
-                echo "AVISO: No se pudo preparar $f"
-              fi
-
+              ffmpeg -hide_banner -loglevel error -y \
+                -i "$CARTEL" \
+                -frames:v 1 \
+                -vf "scale=820:460:force_original_aspect_ratio=increase,crop=820:460,setsar=1,format=rgb24" \
+                "$CARTEL_DIR/$NOMBRE"
             done
 
-            if [ "$n" -eq 0 ]; then
-              echo "No hay carteles válidos."
-              rm -f carteles_video.mp4
-              return 0
-            fi
+            : > "$CONCAT_FILE"
 
-            # Duplicar primera imagen para completar
-            # los 30 segundos del último cartel.
+            for ((i=1; i<=NUMERO; i++)); do
+              printf -v NOMBRE "%04d.png" "$i"
+              printf "file '%s'\nduration 30\n" "$CARTEL_DIR/$NOMBRE" >> "$CONCAT_FILE"
+            done
 
-            printf "file '%s'\n" \
-              "$PWD/$D/0001.png" >> "$D/secuencia.txt"
+            # Repetir el último archivo para que el último cartel
+            # también conserve sus 30 segundos completos.
+            printf -v ULTIMO "%04d.png" "$NUMERO"
+            printf "file '%s'\n" "$CARTEL_DIR/$ULTIMO" >> "$CONCAT_FILE"
 
-            echo "Creando vídeo continuo de carteles..."
+            DURACION=$((NUMERO * 30))
 
-            ffmpeg -nostdin -y -loglevel error \
+            ffmpeg -hide_banner -loglevel error -y \
               -f concat -safe 0 \
-              -i "$D/secuencia.txt" \
-              -t "$((n * 30))" \
+              -i "$CONCAT_FILE" \
+              -t "$DURACION" \
               -vf "fps=24,format=yuv420p" \
+              -an \
               -c:v libx264 \
-              -preset ultrafast \
+              -preset veryfast \
               -crf 23 \
               -pix_fmt yuv420p \
-              -an carteles_video.mp4
+              "$CARTEL_VIDEO"
 
-            echo "Carteles preparados: $n"
-            echo "Duración de cada cartel: 30 segundos"
-          }
+            HAY_CARTELES=1
+            echo "Vídeo de carteles preparado: $DURACION segundos."
 
-          preparar_video_carteles
+          else
+            echo "No hay carteles. Se emitirá solamente el logo de fondo."
+          fi
 
-          # ---------------------------------
-          # 6. EMITIR PROMOCIONES
-          # LOGO SIEMPRE DE FONDO
-          # ---------------------------------
+          # ------------------------------------------
+          # LOCALIZAR PROMOCIONES Y CANCIONES
+          # ------------------------------------------
+
+          PROMOS=()
+
+          for P in promo.mp4 promo1.mp4; do
+            if [[ -f "$P" ]]; then
+              PROMOS+=("$P")
+            fi
+          done
+
+          mapfile -d '' CANCIONES < <(
+            find musica -maxdepth 1 -type f \
+              \( -iname '*.mp3' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.wav' -o -iname '*.ogg' -o -iname '*.flac' \) \
+              -print0 | sort -z
+          )
+
+          if (( ${#CANCIONES[@]} == 0 )); then
+            echo "ERROR: No hay canciones dentro de musica/."
+            exit 1
+          fi
+
+          echo "Promociones encontradas: ${#PROMOS[@]}"
+          echo "Canciones encontradas: ${#CANCIONES[@]}"
+
+          # ------------------------------------------
+          # EMITIR PROMOCIONES A PANTALLA COMPLETA
+          # SIN EL LOGO DE FONDO
+          # ------------------------------------------
 
           emitir_promo() {
-
             local VIDEO="$1"
 
             echo "Emitiendo promoción: $VIDEO"
 
             local AUDIO
-
             AUDIO=$(ffprobe -v error \
               -select_streams a:0 \
               -show_entries stream=codec_type \
               -of csv=p=0 "$VIDEO" 2>/dev/null || true)
 
-            if [ -n "$AUDIO" ]; then
+            if [[ -n "$AUDIO" ]]; then
 
-              ffmpeg -nostdin -hide_banner -loglevel warning \
-                -re -loop 1 -framerate 24 -i "$BG_IMAGE" \
+              ffmpeg -hide_banner -loglevel warning \
                 -re -i "$VIDEO" \
-                -filter_complex "
-                  [0:v]scale=1280:720:force_original_aspect_ratio=decrease,
-                  pad=1280:720:(ow-iw)/2:(oh-ih)/2,
-                  format=yuv420p[bg];
-
-                  [1:v]scale=1100:620:force_original_aspect_ratio=decrease,
-                  setsar=1[promo];
-
-                  [bg][promo]overlay=(W-w)/2:(H-h)/2[video];
-
-                  [1:a:0]aresample=44100,
-                  aformat=channel_layouts=mono[a]
-                " \
-                -map "[video]" -map "[a]" \
-                -c:v libx264 -preset ultrafast \
-                -pix_fmt yuv420p \
-                -b:v 2500k -maxrate 2500k -bufsize 5000k \
-                -r 24 -g 48 \
-                -c:a aac -b:a 128k -ar 44100 -ac 1 \
-                -shortest -f flv "$RTMP" \
-                || echo "AVISO: Error en promoción."
+                -map 0:v:0 \
+                -map 0:a:0 \
+                -vf "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=24,format=yuv420p" \
+                -c:v libx264 \
+                -preset veryfast \
+                -b:v 2500k \
+                -maxrate 3000k \
+                -bufsize 6000k \
+                -g 48 \
+                -c:a aac \
+                -b:a 128k \
+                -ar 44100 \
+                -ac 2 \
+                -max_muxing_queue_size 9999 \
+                -f flv "$RTMP" || echo "Aviso: no se pudo completar $VIDEO"
 
             else
 
-              ffmpeg -nostdin -hide_banner -loglevel warning \
-                -re -loop 1 -framerate 24 -i "$BG_IMAGE" \
+              ffmpeg -hide_banner -loglevel warning \
                 -re -i "$VIDEO" \
-                -f lavfi -i anullsrc=r=44100:cl=mono \
-                -filter_complex "
-                  [0:v]scale=1280:720:force_original_aspect_ratio=decrease,
-                  pad=1280:720:(ow-iw)/2:(oh-ih)/2,
-                  format=yuv420p[bg];
-
-                  [1:v]scale=1100:620:force_original_aspect_ratio=decrease,
-                  setsar=1[promo];
-
-                  [bg][promo]overlay=(W-w)/2:(H-h)/2[video]
-                " \
-                -map "[video]" -map 2:a:0 \
-                -c:v libx264 -preset ultrafast \
-                -pix_fmt yuv420p \
-                -b:v 2500k -maxrate 2500k -bufsize 5000k \
-                -r 24 -g 48 \
-                -c:a aac -b:a 128k -ar 44100 -ac 1 \
-                -shortest -f flv "$RTMP" \
-                || echo "AVISO: Error en promoción."
+                -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 \
+                -map 0:v:0 \
+                -map 1:a:0 \
+                -vf "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,fps=24,format=yuv420p" \
+                -c:v libx264 \
+                -preset veryfast \
+                -b:v 2500k \
+                -maxrate 3000k \
+                -bufsize 6000k \
+                -g 48 \
+                -c:a aac \
+                -b:a 128k \
+                -ar 44100 \
+                -ac 2 \
+                -shortest \
+                -max_muxing_queue_size 9999 \
+                -f flv "$RTMP" || echo "Aviso: no se pudo completar $VIDEO"
 
             fi
           }
 
-          # ---------------------------------
-          # 7. EMITIR MUSICA
-          # LOGO FIJO + CARTELES CADA 30S
-          # ---------------------------------
+          # ------------------------------------------
+          # EMITIR CANCIONES
+          # LOGO DE FONDO + CARTEL + ONDA + ROTULO
+          # ------------------------------------------
 
           emitir_cancion() {
-
             local SONG="$1"
-            local TOTAL_DUR
 
-            echo "================================"
-            echo "Reproduciendo canción: $SONG"
-            echo "================================"
+            echo "Emitiendo canción: $SONG"
 
-            TOTAL_DUR=$(ffprobe -v error \
-              -show_entries format=duration \
-              -of default=noprint_wrappers=1:nokey=1 \
-              "$SONG" 2>/dev/null | cut -d'.' -f1 || true)
+            local AUDIO
+            AUDIO=$(ffprobe -v error \
+              -select_streams a:0 \
+              -show_entries stream=codec_type \
+              -of csv=p=0 "$SONG" 2>/dev/null || true)
 
-            if [ -z "$TOTAL_DUR" ] || [ "$TOTAL_DUR" -le 0 ]; then
-              TOTAL_DUR=180
+            if [[ -z "$AUDIO" ]]; then
+              echo "Canción sin audio reconocible. Se omite: $SONG"
+              return 0
             fi
 
-            echo "Duración: ${TOTAL_DUR} segundos"
+            if (( HAY_CARTELES == 1 )); then
 
-            if [ -s carteles_video.mp4 ]; then
+              # Entrada 0: logo de fondo.
+              # Entrada 1: secuencia de carteles.
+              # Entrada 2: canción.
 
-              echo "Modo: LOGO + CARTELES CADA 30 SEGUNDOS"
-
-              ffmpeg -nostdin -hide_banner -loglevel warning \
-                -stats_period 30 -stats \
-                -re -loop 1 -framerate 24 -i "$BG_IMAGE" \
-                -stream_loop -1 -re -i carteles_video.mp4 \
+              ffmpeg -hide_banner -loglevel warning \
+                -loop 1 -framerate 24 -i "$BG_IMAGE" \
+                -stream_loop -1 -re -i "$CARTEL_VIDEO" \
                 -re -i "$SONG" \
                 -filter_complex "
                   [0:v]
-                  scale=1280:720:force_original_aspect_ratio=decrease,
-                  pad=1280:720:(ow-iw)/2:(oh-ih)/2,
-                  setsar=1,format=yuv420p[bg];
+                    scale=1280:720:force_original_aspect_ratio=increase,
+                    crop=1280:720,
+                    setsar=1
+                    [fondo];
 
                   [1:v]
-                  scale=820:460:force_original_aspect_ratio=decrease,
-                  setsar=1[poster];
+                    scale=820:460:force_original_aspect_ratio=increase,
+                    crop=820:460,
+                    setsar=1,
+                    format=rgba
+                    [cartel];
 
-                  [bg][poster]
-                  overlay=(W-w)/2:(H-h)/2-40[con_cartel];
+                  [fondo][cartel]
+                    overlay=(W-w)/2:100
+                    [base];
 
-                  [2:a:0]asplit=2[audio][wavein];
+                  [2:a]
+                    asplit=2[audio][onda_in];
 
-                  [wavein]
-                  aresample=44100,
-                  aformat=channel_layouts=mono,
-                  showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];
+                  [onda_in]
+                    showwaves=s=1280x75:mode=line:rate=24:colors=white@0.85,
+                    format=rgba
+                    [onda];
 
-                  [con_cartel][onda]
-                  overlay=0:H-h-60[con_onda];
+                  [base][onda]
+                    overlay=0:590
+                    [con_onda];
 
                   [con_onda]
-                  drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,
-                  drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:reload=1:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv];
-
-                  [audio]
-                  aresample=44100,
-                  aformat=sample_fmts=s16:channel_layouts=mono[aout]
+                    drawtext=
+                      fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:
+                      textfile=rotulo.txt:
+                      reload=1:
+                      fontcolor=white:
+                      fontsize=25:
+                      box=1:
+                      boxcolor=black@0.45:
+                      boxborderw=10:
+                      x=w-mod(t*90\,w+tw):
+                      y=h-38
+                    [video]
                 " \
-                -map "[outv]" -map "[aout]" \
-                -t "$TOTAL_DUR" \
-                -c:v libx264 -preset ultrafast \
+                -map "[video]" \
+                -map "[audio]" \
+                -c:v libx264 \
+                -preset veryfast \
+                -b:v 2500k \
+                -maxrate 3000k \
+                -bufsize 6000k \
+                -r 24 \
+                -g 48 \
                 -pix_fmt yuv420p \
-                -b:v 2500k -minrate 2500k \
-                -maxrate 2500k -bufsize 5000k \
-                -r 24 -g 48 \
-                -c:a aac -b:a 128k -ar 44100 -ac 1 \
+                -c:a aac \
+                -b:a 128k \
+                -ar 44100 \
+                -ac 2 \
+                -shortest \
                 -max_muxing_queue_size 9999 \
-                -f flv "$RTMP" || {
-                  echo "AVISO: Error durante la canción."
-                }
+                -flvflags no_duration_filesize \
+                -f flv "$RTMP" || echo "Aviso: error al emitir $SONG"
 
             else
 
-              echo "Modo: LOGO SIN CARTELES"
+              # Sin carteles: el logo permanece como fondo.
 
-              ffmpeg -nostdin -hide_banner -loglevel warning \
-                -stats_period 30 -stats \
-                -re -loop 1 -framerate 24 -i "$BG_IMAGE" \
+              ffmpeg -hide_banner -loglevel warning \
+                -loop 1 -framerate 24 -i "$BG_IMAGE" \
                 -re -i "$SONG" \
                 -filter_complex "
                   [0:v]
-                  scale=1280:720:force_original_aspect_ratio=decrease,
-                  pad=1280:720:(ow-iw)/2:(oh-ih)/2,
-                  setsar=1,format=yuv420p[bg];
+                    scale=1280:720:force_original_aspect_ratio=increase,
+                    crop=1280:720,
+                    setsar=1
+                    [fondo];
 
-                  [1:a:0]asplit=2[audio][wavein];
+                  [1:a]
+                    asplit=2[audio][onda_in];
 
-                  [wavein]
-                  aresample=44100,
-                  aformat=channel_layouts=mono,
-                  showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];
+                  [onda_in]
+                    showwaves=s=1280x75:mode=line:rate=24:colors=white@0.85,
+                    format=rgba
+                    [onda];
 
-                  [bg][onda]overlay=0:H-h-60[con_onda];
+                  [fondo][onda]
+                    overlay=0:590
+                    [con_onda];
 
                   [con_onda]
-                  drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,
-                  drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:reload=1:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv];
-
-                  [audio]
-                  aresample=44100,
-                  aformat=sample_fmts=s16:channel_layouts=mono[aout]
+                    drawtext=
+                      fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:
+                      textfile=rotulo.txt:
+                      reload=1:
+                      fontcolor=white:
+                      fontsize=25:
+                      box=1:
+                      boxcolor=black@0.45:
+                      boxborderw=10:
+                      x=w-mod(t*90\,w+tw):
+                      y=h-38
+                    [video]
                 " \
-                -map "[outv]" -map "[aout]" \
-                -t "$TOTAL_DUR" \
-                -c:v libx264 -preset ultrafast \
+                -map "[video]" \
+                -map "[audio]" \
+                -c:v libx264 \
+                -preset veryfast \
+                -b:v 2500k \
+                -maxrate 3000k \
+                -bufsize 6000k \
+                -r 24 \
+                -g 48 \
                 -pix_fmt yuv420p \
-                -b:v 2500k -minrate 2500k \
-                -maxrate 2500k -bufsize 5000k \
-                -r 24 -g 48 \
-                -c:a aac -b:a 128k -ar 44100 -ac 1 \
+                -c:a aac \
+                -b:a 128k \
+                -ar 44100 \
+                -ac 2 \
+                -shortest \
                 -max_muxing_queue_size 9999 \
-                -f flv "$RTMP" || {
-                  echo "AVISO: Error durante la canción."
-                }
+                -flvflags no_duration_filesize \
+                -f flv "$RTMP" || echo "Aviso: error al emitir $SONG"
 
             fi
           }
 
-          # ---------------------------------
-          # 8. EMISION CONTINUA
-          # ---------------------------------
+          # ------------------------------------------
+          # BUCLE DE EMISIÓN
+          # ------------------------------------------
 
-          while [ "$(date +%s)" -lt "$FIN" ]; do
+          INICIO=$SECONDS
+          LIMITE=$((330 * 60))
 
-            echo "================================"
-            echo "NUEVO CICLO MUSICAL"
-            echo "================================"
+          while (( SECONDS - INICIO < LIMITE )); do
 
-            mapfile -d '' CANCIONES < <(
-              find musica -type f \
-                \( -iname '*.mp3' -o -iname '*.mpeg' \
-                   -o -iname '*.m4a' -o -iname '*.aac' \
-                   -o -iname '*.ogg' -o -iname '*.wav' \
-                   -o -iname '*.flac' \) \
-                -size +100c -print0 | shuf -z
-            )
+            echo "Comienza un nuevo ciclo de emisión."
 
-            if [ ${#CANCIONES[@]} -eq 0 ]; then
-              echo "ERROR: No hay canciones."
-              exit 1
-            fi
-
-            for VIDEO in "${PROMOS[@]}"; do
-
-              if [ "$(date +%s)" -ge "$FIN" ]; then
-                break
-              fi
-
-              emitir_promo "$VIDEO"
-
+            # Las promociones son las únicas emisiones
+            # que no utilizan logo.jpg de fondo.
+            for PROMO in "${PROMOS[@]}"; do
+              emitir_promo "$PROMO"
             done
 
+            # Reproducir todas las canciones.
             for SONG in "${CANCIONES[@]}"; do
 
-              if [ "$(date +%s)" -ge "$FIN" ]; then
+              if (( SECONDS - INICIO >= LIMITE )); then
                 break
               fi
 
@@ -436,28 +397,13 @@ jobs:
 
             done
 
-            echo "Finalizado el ciclo musical."
-            sleep 2
-
           done
 
-          echo "================================"
-          echo "TIEMPO DE EMISION COMPLETADO"
-          echo "PREPARANDO RELANZAMIENTO"
-          echo "================================"
+          echo "Fin del periodo de emisión. Se solicitará otra ejecución."
 
-      # ---------------------------------
-      # 9. RELANZAMIENTO AUTOMATICO
-      # ---------------------------------
-
-      - name: Relanzar emisión automáticamente
+      - name: Reiniciar emisión automáticamente
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Programando nuevo ciclo de emisión..."
-
-          gh workflow run radio.yml \
-            --ref "$GITHUB_REF_NAME"
-
-          echo "Nuevo ciclo solicitado correctamente."
+          gh workflow run radio.yml --ref "$GITHUB_REF_NAME"
