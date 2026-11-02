@@ -19,7 +19,7 @@ jobs:
       - name: Instalar FFmpeg y fuentes de texto
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
 
-      - name: Emitir Promo, Promo1 y Musica con Carteles Dinamicos
+      - name: Emitir Directo con Carteles y Musica
         env:
           TZ: 'Europe/Madrid'
           YT_KEY: ${{ secrets.YOUTUBE_KEY }}
@@ -29,7 +29,7 @@ jobs:
           EOF
 
           while true; do
-            echo "=== EMITIENDO promo.mp4 ==="
+            echo ">>> [1/3] Reproduciendo promo.mp4"
             ffmpeg -re -i promo.mp4 \
               -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono,ar=44100[a_out]" \
               -map "[v_out]" -map "[a_out]" \
@@ -38,7 +38,7 @@ jobs:
               -c:a aac -b:a 128k -ar 44100 \
               -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
 
-            echo "=== EMITIENDO promo1.mp4 ==="
+            echo ">>> [2/3] Reproduciendo promo1.mp4"
             ffmpeg -re -i promo1.mp4 \
               -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v_out];[0:a]aformat=channel_layouts=mono,ar=44100[a_out]" \
               -map "[v_out]" -map "[a_out]" \
@@ -47,20 +47,18 @@ jobs:
               -c:a aac -b:a 128k -ar 44100 \
               -f flv "rtmp://a.rtmp.youtube.com/live2/$YT_KEY" || true
 
-            echo "=== EMITIENDO MUSICA CON CARTELES Y ROTULOS ==="
-            # Selecciona de forma aleatoria canciones y carteles disponibles
+            echo ">>> [3/3] Reproduciendo musica intercalando carteles de la carpeta"
             find musica -type f \( -name "*.mp3" -o -name "*.mpeg" \) ! -size -100c | shuf > lista_musica.txt || echo "Camins_de_pedra.mp3" > lista_musica.txt
             
-            # Si tienes una carpeta de carteles, usa uno aleatorio; si no, usa el logo.jpg
-            CARTELL=$(find carteles -type f \( -name "*.jpg" -o -name "*.png" \) 2>/dev/null | shuf -n 1)
-            if [ -z "$CARTELL" ]; then
-              CARTELL="logo.jpg"
-            fi
-            echo "Cartel seleccionado para este bloque musical: $CARTELL"
-
             while read -r song; do
               if [ -f "$song" ]; then
-                echo "Reproduciendo pista: $song con cartel $CARTELL"
+                # Selecciona un cartel aleatorio de la carpeta carteles (o usa logo.jpg si falla)
+                CARTELL=$(find carteles -type f \( -name "*.jpg" -o -name "*.png" \) 2>/dev/null | shuf -n 1)
+                if [ -z "$CARTELL" ]; then
+                  CARTELL="logo.jpg"
+                fi
+                echo "Reproduciendo pista: $song con cartel: $CARTELL"
+
                 ffmpeg -re -loop 1 -framerate 24 -i "$CARTELL" -i "$song" \
                   -filter_complex "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[bg];[1:a]aformat=channel_layouts=mono,ar=44100,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda];[bg][onda]overlay=0:H-h-60[con_onda];[con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
                   -map "[outv]" -map 1:a \
