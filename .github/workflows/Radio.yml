@@ -19,7 +19,7 @@ jobs:
       - name: Instalar FFmpeg
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core bc
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
 
       - name: Comprobar y preparar emision
         env:
@@ -58,7 +58,7 @@ jobs:
           fi
 
           cat > rotulo.txt <<'EOF'
-          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   TODOS LOS DOMINGOS (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUÑOZ   ---
+          *** ESPIGOLERA RADIO TV ***   PATROCINA RESTAURANTE CAN TIA TALECA DE LLUCMAJOR   |   TODOS LOS DOMINGO (20.00 h) En directo con Juan Rodriguez, El Poeta del Asfalto   |   MIERCOLES 04 DE NOVIEMBRE (17.00 h) Entrevista con Tomas Sastre   |   RESTO DE DIAS MUSICA ININTERRUMPIDA 24 HORAS   |   PRESENTA SANTIAGO MUÑOZ   ---
           EOF
 
           echo "Buscando videos promocionales..."
@@ -96,7 +96,7 @@ jobs:
           echo "================================"
 
           # ---------------------------------
-          # 1. VIDEOS PROMOCIONALES (A pantalla completa con su propio vídeo y audio)
+          # 1. VIDEOS PROMOCIONALES
           # ---------------------------------
 
           emitir_promo() {
@@ -147,8 +147,7 @@ jobs:
           done
 
           # ---------------------------------
-          # 2. MUSICA CON LOGO DE FONDO FIJO Y CARTELES ROTATIVOS CADA 30S
-          # 3. ONDA ANIMADA Y ROTULO DESLIZANTE
+          # 2. MUSICA CON LOGO FIJO Y CARTELES ROTATIVOS CADA 30S
           # ---------------------------------
 
           emitir_cancion() {
@@ -164,11 +163,18 @@ jobs:
             )
 
             echo "================================"
-            echo "Reproduciendo cancion con logo fijo y carteles superpuestos: $SONG"
+            echo "Reproduciendo cancion: $SONG"
             echo "================================"
 
             local OFFSET=0
-            while true; do
+            # Obtenemos la duración en segundos enteros de forma segura
+            local TOTAL_DUR
+            TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$SONG" 2>/dev/null | cut -d'.' -f1 || echo "180")
+            if [ -z "$TOTAL_DUR" ] || [ "$TOTAL_DUR" -eq 0 ]; then
+              TOTAL_DUR=180
+            fi
+
+            while [ $OFFSET -lt $TOTAL_DUR ]; do
               if [ ${#CARTELES[@]} -gt 0 ]; then
                 CARTEL="${CARTELES[$((RANDOM % ${#CARTELES[@]}))]}"
               else
@@ -199,17 +205,11 @@ jobs:
                 -f flv "$RTMP" || break
 
               OFFSET=$((OFFSET + 30))
-
-              local TOTAL_DUR
-              TOTAL_DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$SONG" 2>/dev/null || echo "0")
-              if (( $(echo "$OFFSET >= ${TOTAL_DUR%.*:-0}" | bc -l 2>/dev/null || echo "0") )); then
-                break
-              fi
             done
           }
 
           # ---------------------------------
-          # 5. EMISION CONTINUA
+          # 3. EMISION CONTINUA
           # ---------------------------------
 
           while true; do
