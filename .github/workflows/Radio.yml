@@ -115,7 +115,7 @@ jobs:
               ffmpeg -nostdin -hide_banner -loglevel warning \
                 -stats_period 30 -stats -re -i "$VIDEO" \
                 -filter_complex \
-                "[0:v:0]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v];[0:a:0]aresample=44100,aformat=channel_layouts=mono[a]" \
+                "[0:v:0]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v];[0:a:0]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono[a]" \
                 -map "[v]" -map "[a]" \
                 -c:v libx264 -preset ultrafast \
                 -b:v 2500k -maxrate 2500k -bufsize 5000k \
@@ -147,7 +147,7 @@ jobs:
           done
 
           # ---------------------------------
-          # 2. MUSICA CON LOGO FIJO Y CARTELES ROTATIVOS CADA 30S (BLINDADO)
+          # 2. MUSICA CON LOGO FIJO Y CARTELES ROTATIVOS CADA 30S
           # ---------------------------------
 
           emitir_cancion() {
@@ -182,7 +182,6 @@ jobs:
 
               echo "-> Fondo: $BG_IMAGE | Cartel encima: $CARTEL (bloque de 30s desde segundo $OFFSET)"
 
-              # Añadimos flags de estabilidad de red y manejo de errores para que no se quede bloqueado
               ffmpeg -nostdin -hide_banner -loglevel warning \
                 -stats_period 30 -stats \
                 -fflags +nobuffer+genpts -flags low_delay \
@@ -193,7 +192,7 @@ jobs:
                 "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[bg]; \
                  [1:v]scale=820:460:force_original_aspect_ratio=decrease,format=yuv420p[poster]; \
                  [bg][poster]overlay=(W-w)/2:(H-h)/2-40[con_cartel]; \
-                 [2:a:0]aresample=44100,aformat=channel_layout=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda]; \
+                 [2:a:0]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,showwaves=s=1280x110:mode=cline:rate=24:colors=white@0.85[onda]; \
                  [con_cartel][onda]overlay=0:H-h-60[con_onda]; \
                  [con_onda]drawbox=x=0:y=ih-48:w=iw:h=48:color=black@0.85:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:textfile=rotulo.txt:reload=1:fontcolor=yellow:fontsize=25:y=h-35:x=w-mod(t*90\,w+tw)[outv]" \
                 -map "[outv]" -map 2:a:0 \
