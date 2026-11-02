@@ -28,6 +28,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          trap 'echo "Cancelando emisión..."; kill $(jobs -p) 2>/dev/null; exit 0' SIGINT SIGTERM
 
           echo "================================"
           echo "   ESPIGOLERA RADIO TV"
@@ -147,7 +148,7 @@ jobs:
           done
 
           # ---------------------------------
-          # 2. MUSICA CON LOGO FIJO Y CARTELES ROTATIVOS CADA 30S
+          # 2. MUSICA CON LOGO FIJO Y CARTELES ROTATIVOS CADA 30S (ESTABLE)
           # ---------------------------------
 
           emitir_cancion() {
@@ -182,9 +183,11 @@ jobs:
 
               echo "-> Fondo: $BG_IMAGE | Cartel encima: $CARTEL (bloque de 30s desde segundo $OFFSET)"
 
+              # Añadimos flags de tolerancia a fallos y búfer de red ampliado (-max_muxing_queue_size 9999)
               ffmpeg -nostdin -hide_banner -loglevel warning \
                 -stats_period 30 -stats \
-                -fflags +nobuffer+genpts -flags low_delay \
+                -fflags +nobuffer+genpts+ignidx -flags low_delay \
+                -max_muxing_queue_size 9999 \
                 -loop 1 -framerate 24 -i "$BG_IMAGE" \
                 -loop 1 -framerate 24 -i "$CARTEL" \
                 -re -ss "$OFFSET" -i "$SONG" -t 30 \
@@ -198,12 +201,11 @@ jobs:
                 -map "[outv]" -map 2:a:0 \
                 -c:v libx264 -preset ultrafast \
                 -pix_fmt yuv420p \
-                -b:v 2500k -maxrate 2500k -bufsize 5000k \
+                -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k \
                 -r 24 -g 48 \
                 -c:a aac -b:a 128k -ar 44100 -ac 1 \
                 -shortest -f flv "$RTMP" || {
-                  echo "AVISO: Pequeño corte en bloque, saltando al siguiente..."
-                  break
+                  echo "AVISO: Microcorte evitado, continuando..."
                 }
 
               OFFSET=$((OFFSET + 30))
